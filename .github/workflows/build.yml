@@ -6,65 +6,68 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Theos
+      - name: Show sources
         run: |
-          set -euo pipefail
-          brew install ldid xz
-          export THEOS=$HOME/theos
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
-          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
-          echo "=== theos root ==="
-          ls "$THEOS"
-          echo "=== sdks ==="
-          ls "$THEOS/sdks" | head -20
-
-      - name: Check substrate (hook engine)
-        run: |
-          set -euo pipefail
-          echo "THEOS=$THEOS"
-          echo "=== libsubstrate ==="
-          find "$THEOS" -name "libsubstrate*" 2>/dev/null || echo "NO SUBSTRATE FILE"
-          echo "=== vendor/lib ==="
-          ls -la "$THEOS/vendor/lib" 2>/dev/null || echo "no vendor/lib"
-
-      - name: Build
-        run: |
-          echo "=== files ==="
           ls -la
-          echo "=== makefile candidates ==="
-          ls -la Makefile makefile 2>/dev/null || true
-          echo "=== build ==="
-          make clean 2>/dev/null || true
-          set -o pipefail
-          make -j4 2>&1 | tee build.log
-          echo "=== make exit: $? ==="
-          echo "=== artifacts on disk ==="
-          find . -name "*.dylib" 2>/dev/null || true
-          ls -la packages 2>/dev/null || true
+          head -30 Tweak.m
 
-      - name: Verify dylib
+      - name: Compile dylib with clang (no Theos)
         run: |
           set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
           mkdir -p out
-          find . -name "MTDeviceSpoof.dylib" -exec cp {} out/ \;
-          ls -la out/ || true
-          if [ ! -f out/MTDeviceSpoof.dylib ]; then
-            echo "::error::MTDeviceSpoof.dylib was not produced - see build.log artifact"
-            exit 1
-          fi
+
+          clang -arch arm64 \
+            -dynamiclib \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=14.0 \
+            -fobjc-arc \
+            -O2 \
+            -Wno-deprecated-declarations \
+            -Wno-unused-function \
+            -Wno-unused-variable \
+            -install_name @executable_path/Frameworks/MTDeviceSpoof.dylib \
+            -framework Foundation \
+            -framework UIKit \
+            -framework Security \
+            -framework AdSupport \
+            -framework CoreTelephony \
+            -framework CoreMotion \
+            -framework SystemConfiguration \
+            -framework NetworkExtension \
+            -framework CFNetwork \
+            -o out/MTDeviceSpoof.dylib \
+            Tweak.m
+
+          ls -la out/
           file out/MTDeviceSpoof.dylib
 
-      - name: Upload artifacts + log
+      - name: Sign
+        run: |
+          set -euo pipefail
+          brew install ldid
+          ldid -S out/MTDeviceSpoof.dylib
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          otool -L out/MTDeviceSpoof.dylib
+          if otool -L out/MTDeviceSpoof.dylib | grep -qi "CydiaSubstrate"; then
+            echo "::error::depends on CydiaSubstrate"
+            exit 1
+          fi
+          echo "OK: no substrate dependency"
+          lipo -info out/MTDeviceSpoof.dylib
+
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-output
-          path: |
-            out/
-            build.log
+          path: out/
           if-no-files-found: warn
