@@ -29,12 +29,18 @@
 #import <dlfcn.h>
 #import <string.h>
 
-// iOS SDK 不提供 <sys/ptrace.h>（那是 Linux 的），ptrace 符号由 libsystem 导出，
-// 这里手动声明后 %hookf 才能拿到它。
+// iOS SDK 不提供 <sys/ptrace.h>（那是 Linux 的），ptrace 符号由 libsystem 导出。
+// .xm 由 clang++ 编译，必须包 extern "C"，否则会按 C++ 规则 mangle 成 _Z6ptraceii… 而链接失败。
 #ifndef PT_DENY_ATTACH
 #define PT_DENY_ATTACH 31
 #endif
-extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
+#ifdef __cplusplus
+extern "C" {
+#endif
+int ptrace(int request, pid_t pid, caddr_t addr, int data);
+#ifdef __cplusplus
+}
+#endif
 
 #pragma mark - ========== 0. 伪档案 ==========
 
