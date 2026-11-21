@@ -170,7 +170,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return %orig;
 }
-%end
 
 %hookf(OSStatus, SecItemAdd, CFDictionaryRef attributes, CFTypeRef *result) {
     NSMutableDictionary *m = [(__bridge NSDictionary *)attributes mutableCopy];
@@ -181,7 +180,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return %orig;
 }
-%end
 
 %hookf(OSStatus, SecItemUpdate, CFDictionaryRef query, CFDictionaryRef attrs) {
     NSDictionary *q = (__bridge NSDictionary *)query;
@@ -193,7 +191,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return %orig;
 }
-%end
 
 #pragma mark - ========== 3. 硬件标识（sysctl / uname）==========
 
@@ -221,7 +218,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return %orig;
 }
-%end
 
 // 内核版本串里带真实构建信息
 %hookf(int, uname, struct utsname *buf) {
@@ -231,7 +227,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return r;
 }
-%end
 
 #pragma mark - ========== 4. 网络标识（WiFi / 运营商）==========
 
@@ -244,7 +239,6 @@ static NSString *MTSpoofForKey(id acct) {
     };
     return (__bridge_retained CFDictionaryRef)d;
 }
-%end
 
 %hook NEHotspotNetwork
 - (NSString *)SSID       { return [MTProfile shared].ssid; }
@@ -262,7 +256,6 @@ static NSString *MTSpoofForKey(id acct) {
 %hookf(CFDictionaryRef, CFNetworkCopySystemProxySettings) {
     return (__bridge_retained CFDictionaryRef)@{};
 }
-%end
 
 #pragma mark - ========== 5. 存储 / 内存 ==========
 
@@ -366,7 +359,6 @@ static NSString *MTSpoofForKey(id acct) {
     }
     return %orig;
 }
-%end
 
 // 从镜像列表里剔除自己
 %hookf(const char *, _dyld_get_image_name, uint32_t idx) {
@@ -375,14 +367,12 @@ static NSString *MTSpoofForKey(id acct) {
         return NULL;
     return n;
 }
-%end
 
 // 反调试：ptrace(PT_DENY_ATTACH) 会把调试器顶掉，这里直接放行
 %hookf(int, ptrace, int request, pid_t pid, caddr_t addr, int data) {
     if (request == 31 /* PT_DENY_ATTACH */) return 0;
     return %orig;
 }
-%end
 
 #pragma mark - ========== 10. delete_keychain 标记 ==========
 
