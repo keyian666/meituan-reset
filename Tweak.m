@@ -9,11 +9,9 @@
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
 #import <AdSupport/AdSupport.h>
-#import <CoreTelephony/CTTelephonyNetworkInfo.h>
-#import <CoreTelephony/CTCarrier.h>
-#import <CoreMotion/CoreMotion.h>
+// CoreTelephony / CoreMotion / NetworkExtension 的类一律用 NSClassFromString 访问，
+// 不 import 它们的头（部分头会 #error 要求用 @import module）。
 #import <SystemConfiguration/CaptiveNetwork.h>
-#import <NetworkExtension/NEHotspotNetwork.h>
 #import <CFNetwork/CFNetwork.h>
 #import <CFNetwork/CFProxySupport.h>
 #import <stdlib.h>
