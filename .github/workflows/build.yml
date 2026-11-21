@@ -16,34 +16,39 @@ jobs:
           brew install ldid xz
           export THEOS=$HOME/theos
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
-          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
           echo "THEOS=$THEOS" >> $GITHUB_ENV
-          echo "=== theos root ==="
-          ls "$THEOS"
-          echo "=== sdks ==="
-          ls "$THEOS/sdks" | head -20
 
-      - name: Check substrate (hook engine)
+          # Theos 自带空的 sdks 占位目录，先清掉再软链 Xcode 的 SDK
+          rm -rf "$THEOS/sdks"
+          mkdir -p "$THEOS/sdks"
+
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          VER=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "Xcode SDK: $SDK (version $VER)"
+
+          ln -sfn "$SDK" "$THEOS/sdks/iPhoneOS.sdk"
+          ln -sfn "$SDK" "$THEOS/sdks/iPhoneOS${VER}.sdk"
+
+          echo "=== sdks ==="
+          ls -la "$THEOS/sdks"
+          echo "=== sdk sanity ==="
+          ls "$SDK/SDKSettings.plist" && ls "$SDK/usr/include" | head -3
+
+      - name: Check substrate
         run: |
           set -euo pipefail
           echo "THEOS=$THEOS"
-          echo "=== libsubstrate ==="
           find "$THEOS" -name "libsubstrate*" 2>/dev/null || echo "NO SUBSTRATE FILE"
-          echo "=== vendor/lib ==="
           ls -la "$THEOS/vendor/lib" 2>/dev/null || echo "no vendor/lib"
 
       - name: Build
         run: |
-          echo "=== files ==="
-          ls -la
+          set -o pipefail
           echo "=== makefile candidates ==="
           ls -la Makefile makefile 2>/dev/null || true
-          echo "=== build ==="
           make clean 2>/dev/null || true
-          set -o pipefail
           make -j4 2>&1 | tee build.log
           echo "=== make exit: $? ==="
-          echo "=== artifacts on disk ==="
           find . -name "*.dylib" 2>/dev/null || true
           ls -la packages 2>/dev/null || true
 
@@ -54,10 +59,12 @@ jobs:
           find . -name "MTDeviceSpoof.dylib" -exec cp {} out/ \;
           ls -la out/ || true
           if [ ! -f out/MTDeviceSpoof.dylib ]; then
-            echo "::error::MTDeviceSpoof.dylib was not produced - see build.log artifact"
+            echo "::error::dylib not produced - check build-output artifact"
             exit 1
           fi
           file out/MTDeviceSpoof.dylib
+          echo "=== undefined symbols ==="
+          nm -u out/MTDeviceSpoof.dylib 2>/dev/null | head -20 || true
 
       - name: Upload artifacts + log
         if: always()
