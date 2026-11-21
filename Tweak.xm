@@ -19,13 +19,22 @@
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <NetworkExtension/NEHotspotNetwork.h>
 #import <CFNetwork/CFNetwork.h>
+#import <CFNetwork/CFProxySupport.h>
+#import <stdlib.h>
 #import <sys/utsname.h>
 #import <sys/sysctl.h>
-#import <sys/ptrace.h>
+#import <sys/types.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <string.h>
+
+// iOS SDK 不提供 <sys/ptrace.h>（那是 Linux 的），ptrace 符号由 libsystem 导出，
+// 这里手动声明后 %hookf 才能拿到它。
+#ifndef PT_DENY_ATTACH
+#define PT_DENY_ATTACH 31
+#endif
+extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 #pragma mark - ========== 0. 伪档案 ==========
 
