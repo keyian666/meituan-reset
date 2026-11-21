@@ -1,52 +1,90 @@
 # meituan-reset
 
-给 **美团 iOS（`com.meituan.imeituan`）** 注入一套稳定、可控的设备身份，让它被服务端视为"一台新设备"。
+对 **美团 iOS（`com.meituan.imeituan` 12.69.201）** 做设备信息接管，让它被服务端视为"一台新设备"。
 
-面向 **TrollStore（巨魔）+ 无越狱**（iOS 14–17），产物是独立 `dylib`，用 **TrollFools** 注入，不需要重签名、不需要电脑。
+面向 **TrollStore（巨魔）+ 无越狱**（iOS 14–17）：产物是独立 `dylib`，用 **TrollFools** 注入，不需要越狱、不需要重签名。
 
 ---
 
-## 为什么不能"删文件了事"
+## 一、为什么要这么做（逆向后的事实）
 
-美团 iOS 的设备身份有三层，最顽固的一层在 keychain：
+二进制已脱壳（`LC_ENCRYPTION_INFO.cryptid = 0`，215 MB，单二进制无独立 Framework）。
+`__objc_classlist` / `__objc_methname` 可读，敏感 API 全部套了一层 `CIPPrivacySniffe` 分类 ——
+说明美团有统一的隐私采集层，**hook 原始 API 即可全覆盖**。
 
-| 层 | 位置 | 卸载后是否保留 |
+### 身份链（最关键）
+
+| 层 | 位置 | 卸载是否保留 |
 |---|---|---|
-| Keychain | group `FSS9ANCQ68.com.meituan.access`，account `com.meituan.kONIPrivateKeychainValue{UUID,DPID,UnionID}` 及 `kONIShared*` | **保留** |
+| Keychain | group `FSS9ANCQ68.com.meituan.access`，account `com.meituan.kONIPrivateKeychainValue{UUID,DPID,UnionID}` + `kONIShared*` | **保留** |
 | IDFV | `identifierForVendor`（`CIPPSIDFVService` / `MTDX_IDFV_Store_Key`） | 重装会变 |
-| 硬件指纹 | `SAKGuardDeviceFingerprint` / `MSIRiskControlFingerprintContext` | 不变 |
+| IDFA | `advertisingIdentifier`（`CIPPSIDFAService`） | 用户可重置 |
+| 硬件指纹 | `SAKGuardDeviceFingerprint` / `MSIRiskControlFingerprintContext` / `QCSFingerprintGenerator` | 不变 |
 
-而且二进制里有这几条格式串：
+### 陷阱：它记录"你删过 keychain"
 
 ```
 {"date":"%s","launch_id":"%s","exit_type":"%s","delete_keychain":%d}
 {"date":"%s","launch_id":"%s","delete_keychain":%d,"has_delete_keychain":%lf,"old_uuid":"%s"}
 ```
 
-`CIPLaunchProtectDeleteKeyChain` 会记录"你删过 keychain"，并把 `old_uuid` 一起上报 ——
-所以**直接清 keychain 是负收益**，比不动更可疑。
+`CIPLaunchProtectDeleteKeyChain` 会把 `delete_keychain` 状态和 `old_uuid` 一起上报。
+**直接清 keychain = 主动告诉风控"我在换设备"**，比不动更糟。
 
-正确做法：**读和写都接管**，让它看到一套"看起来正常、稳定、全新"的值。
-
----
-
-## 本项目的做法
-
-- 生成一套伪身份（UUID / IDFV / IDFA / DPID / UnionID），持久化在 App 沙盒
-  `Library/Preferences/com.mt.spoof.plist`
-- `SecItemCopyMatching` / `SecItemAdd` / `SecItemUpdate` 三个入口同时改写
-- 屏蔽注入痕迹：`DYLD_INSERT_LIBRARIES`、`_dyld_get_image_name` 里的自身镜像
-- 屏蔽常见越狱路径探针
-- 压掉 `delete_keychain` / `hasDeleteKeychain` 标记
-- 首版额外 dump 指纹相关类的方法名，用于下一轮精确 hook
+正确做法：**读和写都接管**，让它看到一套"稳定、格式正常、全新"的值。
 
 ---
 
-## 构建
+## 二、覆盖清单
 
-### GitHub Actions（推荐，仓库已带 workflow）
+### 已接管（改成稳定伪值）
 
-推代码即可，`Actions → build-dylib → Artifacts` 下载 `MTDeviceSpoof.dylib`。
+| 类别 | Hook 点 | 处理 |
+|---|---|---|
+| 设备标识 | `UIDevice.identifierForVendor` | 伪 UUID（持久化） |
+| | `ASIdentifierManager.advertisingIdentifier` | 伪 UUID |
+| | `UIDevice.name` | 固定 `iPhone`（真值常含姓名） |
+| Keychain | `SecItemCopyMatching` / `SecItemAdd` / `SecItemUpdate` | UUID / DPID / UnionID 三键读写接管 |
+| 硬件 | `sysctlbyname`（`hw.memsize` / `hw.ncpu` / `hw.physicalcpu` / `hw.logicalcpu` / `hw.pagesize`） | 4GB / 6 核 / 16K |
+| | `uname` | 内核版本串固定 |
+| 网络 | `CNCopyCurrentNetworkInfo` | 伪 SSID + 伪 BSSID |
+| | `NEHotspotNetwork.SSID / BSSID` | 同上 |
+| | `CTCarrier.carrierName / mcc / mnc / iso` | 中国移动 460/00/cn |
+| | `CFNetworkCopySystemProxySettings` | 返回空（无代理） |
+| 存储内存 | `NSFileManager.attributesOfFileSystemForPath:error:` | 128GB / 32GB 可用 |
+| | `NSProcessInfo.physicalMemory / processorCount` | 4GB / 6 |
+| 电池 | `UIDevice.batteryLevel / batteryState` | 稳定中位值 + Unplugged |
+| 剪贴板 | `UIPasteboard.string / strings / items / changeCount` | 空（防止采集复制过的手机号/地址） |
+| 已装应用 | `UIApplication.canOpenURL:` | 屏蔽 cydia/sileo/filza/trollstore/frida/竞品 App 等 scheme |
+| | `LSApplicationWorkspace.allInstalledApplications` | 只返回 `com.apple.*` |
+| 越狱 | `NSFileManager.fileExistsAtPath:` | Cydia / Sileo / Substrate / libhooker / `/var/jb` / TrollStore 标记 → NO |
+| 注入痕迹 | `getenv("DYLD_INSERT_LIBRARIES")` | NULL |
+| | `_dyld_get_image_name` | 剔除自身与 Substrate |
+| 反调试 | `ptrace(request == PT_DENY_ATTACH)` | 直接放行 |
+| 标记刷白 | `NSUserDefaults` 的 `delete_keychain` / `hasDeleteKeychain` | NO / 0 |
+| 传感器 | `CMMotionManager.is*Available` | NO（`CIPPSSensorRecorder` 靠加速度计做行为指纹） |
+
+### 故意不改（改了反而露馅）
+
+| 项 | 原因 |
+|---|---|
+| `hw.machine`（机型） | 机型与**屏幕物理分辨率**强绑定。只改机型不改分辨率，交叉校验立刻命中；两者都改会导致 UI 布局错乱 |
+| `UIScreen.bounds` / `nativeBounds` / `scale` | 改动会破坏渲染，且同型号设备本来就共享这些值，不构成个体识别 |
+| `NSLocale` / `NSTimeZone` / `preferredLanguages` | 与账号收货地址、地理位置强相关，改了反而制造"设备与账号地理矛盾" |
+| 真实 IP | 属于网络层，改不了实际连接；且服务端看的是出口 IP |
+
+> 结论：**"能区分个体"的字段全部接管；"型号级"的字段保持真实。** 这是不容易被交叉校验打穿的分界线。
+
+---
+
+## 三、构建
+
+### GitHub Actions
+
+推代码 → `Actions → build-dylib → Artifacts → MTDeviceSpoof-dylib`。
+
+构建日志里会打印 `--- looking for libsubstrate ---`，确认 `$THEOS/vendor/lib/libsubstrate.a` 存在。
+找不到就改用 ElleKit，或把 `%hookf` 部分换成内联 fishhook。
 
 ### 本地（macOS）
 
@@ -56,25 +94,29 @@ make clean && make
 find .theos -name MTDeviceSpoof.dylib -exec cp {} . \;
 ```
 
-> 关键：`Makefile` 里 `MTDeviceSpoof_LIBRARIES := substrate` 把 hook 引擎**静态链进 dylib**。
-> TrollStore 环境没有 Cydia Substrate，不静态链接的话 `%hook` 全部失效。
-> 如果 Theos 里找不到 `libsubstrate.a`，改用 ElleKit 或自行内联 fishhook。
-
 ---
 
-## 注入（TrollStore / TrollFools）
+## 四、注入（TrollStore / TrollFools）
 
-1. 确保已用 **AppDump3 / TrollDecrypt** 砸壳（本二进制 `cryptid=0`，已确认脱壳）
-2. 打开 **TrollFools** → 选择「美团」→ `Inject` → 选 `MTDeviceSpoof.dylib`
+1. 确保已砸壳（本包 `cryptid=0`，已确认）
+2. **TrollFools** → 选择「美团」→ `Inject` → 选 `MTDeviceSpoof.dylib`
 3. 重启美团
 
-TrollFools 注入后仍保留原 bundle id 与 entitlements，因此
-`FSS9ANCQ68.com.meituan.access` 这个 keychain group **依然可读** —— 这是能"覆盖"它的前提。
+TrollFools 注入后保留原 bundle id 与 entitlements，所以
+`FSS9ANCQ68.com.meituan.access` 这个 keychain group **依然可读** —— 这是能覆盖它的前提。
+
+> 原包 entitlements 已核实：
+> ```
+> application-identifier = FSS9ANCQ68.com.meituan.imeituan
+> keychain-access-groups = FSS9ANCQ68.com.meituan.access
+>                          FSS9ANCQ68.com.meituan.imeituan
+> application-groups     = group.com.meituan.imeituan
+> ```
 
 ### 备选：重打包
 
 ```bash
-ldid -e imeituan > ent.plist            # 提取原 entitlements（必须保留 keychain group）
+ldid -e imeituan > ent.plist
 insert_dylib --inplace --strip-codesig \
   @executable_path/Frameworks/MTDeviceSpoof.dylib imeituan
 mkdir -p Frameworks && cp MTDeviceSpoof.dylib Frameworks/
@@ -83,51 +125,37 @@ ldid -S Frameworks/MTDeviceSpoof.dylib
 zip -qr mt-spoof.ipa Payload/
 ```
 
-然后用 TrollStore 安装（同 bundle id 覆盖安装，App 数据与 keychain 保留）。
-
 ---
 
-## 验证
+## 五、验证
 
-用 **Console.app**（Mac 连手机）或 TrollStore 自带的日志查看，过滤 `SPOOF`：
+Mac 连手机开 **Console.app**，过滤 `SPOOF`：
 
 ```
-[SPOOF] loaded into com.meituan.imeituan v12.69.201
-[SPOOF] store=0 path=/var/mobile/Containers/Data/Application/<UUID>/Library/Preferences/com.mt.spoof.plist
-[SPOOF] +deviceFingerprintIdentifier:      <- 下一轮据此精确 hook
-[SPOOF] -getFingerprintID
-...
+[SPOOF] active in com.meituan.imeituan v12.69.201
+[SPOOF] profile loaded (0 keys) path=.../Library/Preferences/com.mt.spoof.plist
+[SPOOF] uuid=... dpid=... bssid=...
+[SPOOF] -[SAKGuardDeviceFingerprint ...]     <- 下一版据此精确 hook
 ```
 
-确认身份落盘：
+确认落盘（Filza 或 `scp`）：
 
 ```bash
-# 越狱设备可直接看；TrollStore 无越狱用 Filza 之类浏览该容器
-cat /var/mobile/Containers/Data/Application/*/Library/Preferences/com.mt.spoof.plist
+cat /var/mobile/Containers/Data/Application/<UUID>/Library/Preferences/com.mt.spoof.plist
 ```
 
 ---
 
-## 换一台"新设备"
+## 六、换一台"新设备"
 
-删掉沙盒里的 `Library/Preferences/com.mt.spoof.plist`，重启美团，会重新生成一整套。
-
-或者给 TrollFools 的 App 做一次「卸载数据」（注意：清数据也会重置登录态）。
-
----
-
-## 已知限制
-
-1. `mtgsig` 是 native 计算，签名本身改不了；能改的是喂给它的采集结果 —— 所以 hook 采集点才是正确入口。
-2. 美团可能检测代码签名 / 二进制被修改（`sakguard_static_risk_*`）。注入后如果出现"环境异常"，需要额外处理签名校验。
-3. 服务端还有账号维度与行为维度，伪装设备只解决"设备"这一维。
-4. 首版是"通用 hook"，`SAKGuardDeviceFingerprint` 的真实方法名要靠 dump 结果补上，才能把硬件指纹也替换掉。
+删掉沙盒内 `Library/Preferences/com.mt.spoof.plist`，重启美团，一整套会重新生成
+（UUID / IDFV / IDFA / DPID / UnionID / SSID / BSSID 全换）。
 
 ---
 
-## 下一步
+## 七、剩下的盲区（下一版）
 
-1. 跑一次，拿到 `[SPOOF]` 的 dump 输出
-2. 把 `SAKGuardDeviceFingerprint` / `ONIKeychainStorage` 的真实方法名贴进来
-3. 补精确 hook（返回伪值而不是原值）
-4. 再验证一次下单链路
+1. **`SAKGuardDeviceFingerprint` 的硬件指纹**：方法名未定，当前透传原值 —— 这是最大缺口。
+2. **`mtgsig`**：native 计算，签名本身改不了；只能改喂给它的采集值。
+3. **代码签名校验**：注入后二进制被改，若出现"环境异常"（而非"风险过高"），要额外处理签名校验（`sakguard_static_risk_*`）。
+4. **账号维度**：服务端记录了账号历史，设备伪装只解决设备这一维。
